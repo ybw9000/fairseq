@@ -28,6 +28,7 @@ class MultiheadAttention(nn.Module):
         assert self.head_dim * num_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
         self.scaling = self.head_dim ** -0.5
 
+        # De * 3 because projecting x to k, q, v
         self.in_proj_weight = Parameter(torch.Tensor(3 * embed_dim, embed_dim))
         if bias:
             self.in_proj_bias = Parameter(torch.Tensor(3 * embed_dim))
@@ -72,12 +73,14 @@ class MultiheadAttention(nn.Module):
         batch x src_len, where padding elements are indicated by 1s.
         """
 
+        # q doesn't have to have the same sequence length as k/v,
+        # but k and v have to have the same dimensions.
         qkv_same = query.data_ptr() == key.data_ptr() == value.data_ptr()
         kv_same = key.data_ptr() == value.data_ptr()
 
-        tgt_len, bsz, embed_dim = query.size()
+        tgt_len, bsz, embed_dim = query.size()  # shape: (T, N, De)
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
+        assert list(query.size()) == [tgt_len, bsz, embed_dim]  # ???
         assert key.size() == value.size()
 
         if incremental_state is not None:
@@ -110,7 +113,7 @@ class MultiheadAttention(nn.Module):
 
         if self.bias_k is not None:
             assert self.bias_v is not None
-            k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
+            k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])  # Add one more key/step to keys/TIME steps
             v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
             if attn_mask is not None:
                 attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
@@ -118,6 +121,7 @@ class MultiheadAttention(nn.Module):
                 key_padding_mask = torch.cat(
                     [key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
 
+        # (T, N, De) -> (T, N*h, Dh) -> (N*h, T, Dh)
         q = q.contiguous().view(tgt_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
         if k is not None:
             k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
@@ -131,7 +135,7 @@ class MultiheadAttention(nn.Module):
                 if static_kv:
                     k = prev_key
                 else:
-                    k = torch.cat((prev_key, k), dim=1)
+                    k = torch.cat((prev_key, k), dim=1)  # concact keys of each layer?
             if 'prev_value' in saved_state:
                 prev_value = saved_state['prev_value'].view(bsz * self.num_heads, -1, self.head_dim)
                 if static_kv:
@@ -164,11 +168,12 @@ class MultiheadAttention(nn.Module):
                 key_padding_mask = torch.cat(
                     [key_padding_mask, torch.zeros(key_padding_mask.size(0), 1).type_as(key_padding_mask)], dim=1)
 
+        # (N*h, Tq, Dh) mm (N*h, Dh, Tk) -> (N*h, Tq, Tk)
         attn_weights = torch.bmm(q, k.transpose(1, 2))
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 
         if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(0)
+            attn_mask = attn_mask.unsqueeze(0)  # (Tq, Tk) -> (1, Tq, Tk)
             if self.onnx_trace:
                 attn_mask = attn_mask.repeat(attn_weights.size(0), 1, 1)
             attn_weights += attn_mask
@@ -184,7 +189,7 @@ class MultiheadAttention(nn.Module):
                 ).type_as(attn_weights)
             else:
                 attn_weights = attn_weights.float().masked_fill(
-                    key_padding_mask.unsqueeze(1).unsqueeze(2),
+                    key_padding_mask.unsqueeze(1).unsqueeze(2),  # (N, Tk) -> (N, 1, 1, Tk)
                     float('-inf'),
                 ).type_as(attn_weights)  # FP16 support: cast to float and back
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
@@ -194,14 +199,17 @@ class MultiheadAttention(nn.Module):
         ).type_as(attn_weights)
         attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
 
+        # (N*h, Tq, Tk) mm (N*h, Tv = Tk, Dh) -> (N*h, Tq, Dh)
         attn = torch.bmm(attn_weights, v)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if (self.onnx_trace and attn.size(1) == 1):
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)  # isn't tgt_len == 1?
         else:
+            # (N*h, Tq, Dh) -> (Tq, N*h, Dh) -> (Tq, N, De)
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        # (Tq, N, De) -> (Tq, N, De)
         attn = self.out_proj(attn)
 
         if need_weights:
@@ -214,18 +222,23 @@ class MultiheadAttention(nn.Module):
         return attn, attn_weights
 
     def in_proj_qkv(self, query):
+        # (T, N, De) -> (T, N, De*3) -> Tuple(3 * (T, N, De))
         return self._in_proj(query).chunk(3, dim=-1)
 
     def in_proj_kv(self, key):
+        # (T, N, De) -> (T, N, De*2) -> Tuple(2 * (T, N, De))
         return self._in_proj(key, start=self.embed_dim).chunk(2, dim=-1)
 
     def in_proj_q(self, query):
+        # (T, N, De) -> (T, N, De)
         return self._in_proj(query, end=self.embed_dim)
 
     def in_proj_k(self, key):
+        # (T, N, De) -> (T, N, De)
         return self._in_proj(key, start=self.embed_dim, end=2 * self.embed_dim)
 
     def in_proj_v(self, value):
+        # (T, N, De) -> (T, N, De)
         return self._in_proj(value, start=2 * self.embed_dim)
 
     def _in_proj(self, input, start=0, end=None):

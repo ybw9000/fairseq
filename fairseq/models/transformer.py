@@ -282,7 +282,7 @@ class TransformerEncoder(FairseqEncoder):
             left_pad=left_pad,
             learned=args.encoder_learned_pos,
         ) if not args.no_token_positional_embeddings else None
-
+        # not sequential because num of outputs doesn't match num of inputs
         self.layers = nn.ModuleList([])
         self.layers.extend([
             TransformerEncoderLayer(args)
@@ -587,7 +587,7 @@ class TransformerEncoderLayer(nn.Module):
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.encoder_normalize_before
         self.fc1 = Linear(self.embed_dim, args.encoder_ffn_embed_dim)
-        self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim)
+        self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim)  # One more linear layer?
         self.layer_norms = nn.ModuleList([LayerNorm(self.embed_dim) for i in range(2)])
 
     def forward(self, x, encoder_padding_mask):
@@ -598,7 +598,7 @@ class TransformerEncoderLayer(nn.Module):
                 `(batch, src_len)` where padding elements are indicated by ``1``.
 
         Returns:
-            encoded output of shape `(batch, src_len, embed_dim)`
+            encoded output of shape `(batch, src_len, embed_dim)`  # Isn't it (T, N, D) than (N, T, D)
         """
         residual = x
         x = self.maybe_layer_norm(0, x, before=True)

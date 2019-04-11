@@ -136,6 +136,8 @@ def batch_by_size(
         required_batch_size_multiple (int, optional): require batch size to
             be a multiple of N (default: 1).
     """
+    # Generate subset/minibatch idxs from indices given some f(max_tokens, max_sentences)
+    # if max_tokens in not None, the batchsize can be dynamic
     max_tokens = max_tokens if max_tokens is not None else float('Inf')
     max_sentences = max_sentences if max_sentences is not None else float('Inf')
     bsz_mult = required_batch_size_multiple

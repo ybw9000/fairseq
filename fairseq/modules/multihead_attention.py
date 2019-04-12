@@ -113,6 +113,7 @@ class MultiheadAttention(nn.Module):
 
         if self.bias_k is not None:
             assert self.bias_v is not None
+            # (T, N, De) cat ((1, 1, De) -> (1, N, De)) -> (T + 1, N, De)
             k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])  # Add one more key/step to keys/TIME steps
             v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
             if attn_mask is not None:
@@ -175,7 +176,8 @@ class MultiheadAttention(nn.Module):
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)  # (Tq, Tk) -> (1, Tq, Tk)
             if self.onnx_trace:
-                attn_mask = attn_mask.repeat(attn_weights.size(0), 1, 1)
+                attn_mask = attn_mask.repeat(attn_weights.size(0), 1, 1)  # (1, Tq, Tk) -> (N*h, Tq, Tk)
+            # masked positions modified to negative inf, to prevent attending to self as well as use in BERT
             attn_weights += attn_mask
 
         if key_padding_mask is not None:
@@ -188,12 +190,15 @@ class MultiheadAttention(nn.Module):
                     attn_weights.float()
                 ).type_as(attn_weights)
             else:
+                # masked positions modified to negative inf
+                # to prevent attending to words in the future (words that need to be predicted)
                 attn_weights = attn_weights.float().masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2),  # (N, Tk) -> (N, 1, 1, Tk)
                     float('-inf'),
                 ).type_as(attn_weights)  # FP16 support: cast to float and back
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
+        # (N*h, Tq, Tk)
         attn_weights = utils.softmax(
             attn_weights, dim=-1, onnx_trace=self.onnx_trace,
         ).type_as(attn_weights)
@@ -213,6 +218,7 @@ class MultiheadAttention(nn.Module):
         attn = self.out_proj(attn)
 
         if need_weights:
+            # This is useful for understanding attention hotmap
             # average attention weights over heads
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             attn_weights = attn_weights.sum(dim=1) / self.num_heads

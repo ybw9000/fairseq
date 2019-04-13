@@ -116,9 +116,12 @@ class MultiheadAttention(nn.Module):
             # (T, N, De) cat ((1, 1, De) -> (1, N, De)) -> (T + 1, N, De)
             k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])  # Add one more key/step to keys/TIME steps
             v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
+            # Prevent masking out Attention to bias
             if attn_mask is not None:
+                # (Tq, Tk) -> (Tq, Tk + 1)
                 attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
             if key_padding_mask is not None:
+                # (N, Tk) -> (N, Tk + 1)
                 key_padding_mask = torch.cat(
                     [key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
 
@@ -161,11 +164,15 @@ class MultiheadAttention(nn.Module):
 
         if self.add_zero_attn:
             src_len += 1
+            # Is this for BERT? So it produces a summary of the sentence?
+            # (N*h, T, Dh) cat (N*h, 1, Dh) -> (N*h, T + 1, Dh)
             k = torch.cat([k, k.new_zeros((k.size(0), 1) + k.size()[2:])], dim=1)
             v = torch.cat([v, v.new_zeros((v.size(0), 1) + v.size()[2:])], dim=1)
             if attn_mask is not None:
+                # (Tq, Tk) -> (Tq, Tk + 1)
                 attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
             if key_padding_mask is not None:
+                # (N, Tk) -> (N, Tk + 1)
                 key_padding_mask = torch.cat(
                     [key_padding_mask, torch.zeros(key_padding_mask.size(0), 1).type_as(key_padding_mask)], dim=1)
 
@@ -174,6 +181,8 @@ class MultiheadAttention(nn.Module):
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 
         if attn_mask is not None:
+            # Each sentence will have the same mask, but different position in time (T)
+            # has their own mask, to input shape (Tq, Tk)
             attn_mask = attn_mask.unsqueeze(0)  # (Tq, Tk) -> (1, Tq, Tk)
             if self.onnx_trace:
                 attn_mask = attn_mask.repeat(attn_weights.size(0), 1, 1)  # (1, Tq, Tk) -> (N*h, Tq, Tk)
@@ -192,6 +201,7 @@ class MultiheadAttention(nn.Module):
             else:
                 # masked positions modified to negative inf
                 # to prevent attending to words in the future (words that need to be predicted)
+                # each sentence can have different target length, so shape of mask is (N, Tk)
                 attn_weights = attn_weights.float().masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2),  # (N, Tk) -> (N, 1, 1, Tk)
                     float('-inf'),

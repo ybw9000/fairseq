@@ -80,7 +80,7 @@ class MultiheadAttention(nn.Module):
 
         tgt_len, bsz, embed_dim = query.size()  # shape: (T, N, De)
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]  # ???
+        assert list(query.size()) == [tgt_len, bsz, embed_dim]  # isn't this redundant?
         assert key.size() == value.size()
 
         if incremental_state is not None:
@@ -135,10 +135,13 @@ class MultiheadAttention(nn.Module):
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
             if 'prev_key' in saved_state:
+                # (N, h, T, De) -> (N*h, T, De)
                 prev_key = saved_state['prev_key'].view(bsz * self.num_heads, -1, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
+                    # Attend to previous keys; Looks like a residual connection
+                    # (N*h, Tk, De) -> (N*h, Tk + Tkprev, De), isn't this becoming longer and longer
                     k = torch.cat((prev_key, k), dim=1)  # concact keys of each layer?
             if 'prev_value' in saved_state:
                 prev_value = saved_state['prev_value'].view(bsz * self.num_heads, -1, self.head_dim)

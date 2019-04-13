@@ -138,6 +138,7 @@ class MultiheadAttention(nn.Module):
                 # (N, h, T, De) -> (N*h, T, De)
                 prev_key = saved_state['prev_key'].view(bsz * self.num_heads, -1, self.head_dim)
                 if static_kv:
+                    # key, value from encoder is static
                     k = prev_key
                 else:
                     # Attend to previous keys; Looks like a residual connection

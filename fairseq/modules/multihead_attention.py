@@ -141,9 +141,11 @@ class MultiheadAttention(nn.Module):
                     # key, value from encoder is static
                     k = prev_key
                 else:
-                    # Attend to previous keys; Looks like a residual connection
-                    # (N*h, Tk, De) -> (N*h, Tk + Tkprev, De), isn't this becoming longer and longer
-                    k = torch.cat((prev_key, k), dim=1)  # concact keys of each layer?
+                    # Concact keys of each MultiheadAttention layer so query can
+                    # attend to previous keys; Looks like a residual connection
+                    # Isn't timestep dim (dim 1) becoming longer and longer?
+                    # (N*h, Tk, De) -> (N*h, Tk + Tkprev, De)
+                    k = torch.cat((prev_key, k), dim=1)
             if 'prev_value' in saved_state:
                 prev_value = saved_state['prev_value'].view(bsz * self.num_heads, -1, self.head_dim)
                 if static_kv:
